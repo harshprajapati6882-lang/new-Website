@@ -22,7 +22,8 @@ const statusColor: Record<OrderStatus, string> = {
 export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [runStatuses, setRunStatuses] = useState<any[]>([]); // 🔥 NEW: Track real statuses
+  const [runStatuses, setRunStatuses] = useState<any[]>([]);
+  const [isLoadingStatuses, setIsLoadingStatuses] = useState(false);
   const safeRuns = order?.runs || [];
   const safeRunStatuses = order?.runStatuses || [];
   const safeRunErrors = order?.runErrors || [];
@@ -33,9 +34,10 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
     return () => window.clearInterval(timer);
   }, []);
 
-  // 🔥 NEW: Fetch real run statuses from backend
+  // 🔥 Fetch real run statuses from backend
   useEffect(() => {
     const fetchStatuses = async () => {
+      setIsLoadingStatuses(true);
       try {
         const response = await fetch("https://backend-new-6tzb.onrender.com/api/run-statuses", {
           method: "POST",
@@ -49,26 +51,30 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
         }
       } catch (err) {
         console.error("Failed to fetch run statuses", err);
+      } finally {
+        setIsLoadingStatuses(false);
       }
     };
 
+    fetchStatuses();
+    
     if (expanded) {
-      fetchStatuses();
-      const interval = setInterval(fetchStatuses, 10000); // Poll every 10 seconds
+      const interval = setInterval(fetchStatuses, 10000);
       return () => clearInterval(interval);
     }
   }, [expanded, order.link]);
 
+  // 🔥 FIXED: Progress based on actual SMM panel completion
   const { totalRuns, completedRuns, progressPercent } = useMemo(() => {
     const nextTotalRuns = Math.max(1, safeRuns.length);
-    
-    // 🔥 NEW: Count completed based on actual SMM status
+
+    // Count only runs completed in SMM panel
     const completedFromBackend = runStatuses.filter(
-      (run) => run.smmStatus === "completed" || run.smmStatus === "complete"
+      (run) => run.smmStatus === "completed" || run.smmStatus === "complete" || run.smmStatus === "partial"
     ).length;
-    
+
     const completedFromStatuses = safeRunStatuses.filter((status) => status === "completed").length;
-    
+
     const nextCompletedRuns = Math.min(
       nextTotalRuns,
       Math.max(
@@ -76,33 +82,30 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
         order.status === "completed" ? nextTotalRuns : 0,
         Number.isFinite(order.completedRuns) ? order.completedRuns : 0,
         completedFromStatuses,
-        completedFromBackend // 🔥 Use backend status
+        completedFromBackend
       )
     );
-    
+
     const nextProgressPercent = Math.round((nextCompletedRuns / nextTotalRuns) * 100);
     return { totalRuns: nextTotalRuns, completedRuns: nextCompletedRuns, progressPercent: nextProgressPercent };
   }, [safeRuns, safeRunStatuses, order.status, order.completedRuns, runStatuses]);
 
   const effectiveStatus = useMemo(() => {
     if (order.status === "cancelled") return "cancelled";
+    if (order.status === "failed") return "failed";
 
-    const runs = order.runs || [];
-    const now = Date.now();
-
-    if (runs.length > 0) {
-      const allCompleted = runs.every((run) => {
-        const runTime = new Date(run.at).getTime();
-        return runTime <= now;
-      });
-
-      if (allCompleted) return "completed";
+    // Check if all runs completed in backend
+    if (runStatuses.length > 0) {
+      const allDone = runStatuses.every(
+        (run) => run.done || run.smmStatus === "completed" || run.smmStatus === "complete"
+      );
+      if (allDone) return "completed";
     }
 
     if (order.status === "processing") return "running";
 
     return order.status;
-  }, [order, nowMs]);
+  }, [order, runStatuses, nowMs]);
 
   const shortLink =
     order.link.length > 56 ? `${order.link.slice(0, 36)}...${order.link.slice(-14)}` : order.link;
@@ -129,6 +132,33 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
     } catch (err) {
       console.error("Control action failed", err);
       alert("Action failed. Please try again.");
+    }
+  };
+
+  // 🔥 Cancel individual run
+  const handleCancelRun = async (runId: number | string) => {
+    if (!window.confirm("Cancel this specific run?")) return;
+
+    try {
+      await fetch("https://backend-new-6tzb.onrender.com/api/cancel-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId }),
+      });
+
+      // Update local state
+      setRunStatuses(prev => 
+        prev.map(run => 
+          String(run.id) === String(runId) 
+            ? { ...run, cancelled: true, smmStatus: "cancelled" }
+            : run
+        )
+      );
+
+      alert("Run cancelled successfully");
+    } catch (err) {
+      console.error("Failed to cancel run", err);
+      alert("Failed to cancel run");
     }
   };
 
@@ -164,6 +194,7 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
         </div>
         <p className="text-xs text-gray-500">
           {completedRuns} / {totalRuns} runs completed
+          {isLoadingStatuses && <span className="ml-2 text-yellow-500">⏳</span>}
         </p>
       </div>
 
@@ -190,7 +221,7 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
           onClick={() => handleControl("cancel")}
           className="rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-1.5 text-xs text-red-300 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Cancel
+          Cancel All Runs
         </button>
         <button
           type="button"
@@ -211,22 +242,12 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-            <RunTable 
-              runs={safeRuns} 
-              runStatuses={runStatuses} // 🔥 Pass backend statuses
-              runErrors={safeRunErrors} 
+            <RunTable
+              runs={safeRuns}
+              runStatuses={runStatuses}
+              runErrors={safeRunErrors}
               mode="logs"
-              onCancelRun={(runId) => {
-                // 🔥 NEW: Individual cancel
-                fetch("https://backend-new-6tzb.onrender.com/api/cancel-run", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ runId }),
-                }).then(() => {
-                  alert("Run cancelled");
-                  window.location.reload();
-                });
-              }}
+              onCancelRun={handleCancelRun}
             />
           </motion.div>
         )}
