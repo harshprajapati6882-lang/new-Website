@@ -11,10 +11,9 @@ interface OrdersPageProps {
   onDismissNotice: () => void;
 }
 
-type TabType = "running" | "completed" | "scheduled";
+type TabType = "running" | "completed" | "scheduled" | "cancelled"; // 🔥 Added cancelled
 type ViewMode = "rows" | "columns";
 
-// Batman Status Colors
 const STATUS_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
   running: { bg: "bg-yellow-500/15", text: "text-yellow-300", dot: "bg-yellow-400" },
   processing: { bg: "bg-yellow-500/15", text: "text-yellow-300", dot: "bg-yellow-400" },
@@ -30,6 +29,7 @@ const TABS: { key: TabType; label: string; icon: string }[] = [
   { key: "running", label: "Active", icon: "⚡" },
   { key: "completed", label: "Completed", icon: "✓" },
   { key: "scheduled", label: "Scheduled", icon: "⏱" },
+  { key: "cancelled", label: "Cancelled", icon: "✕" }, // 🔥 NEW TAB
 ];
 
 export function OrdersPage({
@@ -70,12 +70,15 @@ export function OrdersPage({
     const runs = order.runs || [];
     const now = Date.now();
 
+    // 🔥 Check cancelled first
+    if (order.status === "cancelled") return "cancelled";
+
     if (runs.length > 0) {
       const allFuture = runs.every((run) => {
         const runTime = run?.at instanceof Date ? run.at.getTime() : new Date(run?.at ?? now).getTime();
         return runTime > now;
       });
-      if (allFuture && order.status !== "cancelled" && order.status !== "paused") {
+      if (allFuture && order.status !== "paused") {
         return "scheduled";
       }
     }
@@ -97,6 +100,7 @@ export function OrdersPage({
   function getOrderCategory(order: CreatedOrder): TabType {
     const status = getRealStatus(order);
     
+    if (status === "cancelled") return "cancelled"; // 🔥 NEW
     if (status === "completed") return "completed";
     if (status === "scheduled") return "scheduled";
     
@@ -135,12 +139,14 @@ export function OrdersPage({
     const running: CreatedOrder[] = [];
     const completed: CreatedOrder[] = [];
     const scheduled: CreatedOrder[] = [];
+    const cancelled: CreatedOrder[] = []; // 🔥 NEW
 
     orders.forEach((order) => {
       const category = getOrderCategory(order);
       if (category === "running") running.push(order);
       else if (category === "completed") completed.push(order);
-      else scheduled.push(order);
+      else if (category === "scheduled") scheduled.push(order);
+      else if (category === "cancelled") cancelled.push(order); // 🔥 NEW
     });
 
     running.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -151,8 +157,9 @@ export function OrdersPage({
       if (!nextA || !nextB) return 0;
       return nextA.getTime() - nextB.getTime();
     });
+    cancelled.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // 🔥 NEW
 
-    return { running, completed, scheduled };
+    return { running, completed, scheduled, cancelled }; // 🔥 Added cancelled
   }, [orders]);
 
   const filteredOrders = useMemo(() => {
@@ -218,12 +225,14 @@ export function OrdersPage({
       running: { title: "No active missions", description: "Missions in progress will appear here" },
       completed: { title: "No completed missions", description: "Finished missions will appear here" },
       scheduled: { title: "No scheduled missions", description: "Future missions will appear here" },
+      cancelled: { title: "No cancelled missions", description: "Cancelled missions will appear here" }, // 🔥 NEW
     };
 
     const icons = {
       running: "⚡",
       completed: "✅",
       scheduled: "📅",
+      cancelled: "🚫", // 🔥 NEW
     };
 
     return (
@@ -240,10 +249,11 @@ export function OrdersPage({
       { label: "Active", count: categorizedOrders.running.length, color: "text-yellow-400" },
       { label: "Completed", count: categorizedOrders.completed.length, color: "text-emerald-400" },
       { label: "Scheduled", count: categorizedOrders.scheduled.length, color: "text-amber-400" },
+      { label: "Cancelled", count: categorizedOrders.cancelled.length, color: "text-red-400" }, // 🔥 NEW
     ];
 
     return (
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3"> {/* 🔥 Changed to grid-cols-4 */}
         {stats.map((stat) => (
           <div
             key={stat.label}
@@ -360,7 +370,6 @@ export function OrdersPage({
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
-      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3">
@@ -377,10 +386,8 @@ export function OrdersPage({
         </div>
       </div>
 
-      {/* Stats Summary */}
       <StatsSummary />
 
-      {/* Notice */}
       {notice && (
         <div className="flex items-center justify-between rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
           <div className="flex items-center gap-2">
@@ -397,10 +404,8 @@ export function OrdersPage({
         </div>
       )}
 
-      {/* Tabs & Controls */}
       <div className="rounded-xl border border-yellow-500/20 bg-gradient-to-br from-gray-900 to-black p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          {/* Tabs */}
           <div className="flex flex-wrap gap-2">
             {TABS.map((tab) => {
               const count = categorizedOrders[tab.key].length;
@@ -430,7 +435,6 @@ export function OrdersPage({
             })}
           </div>
 
-          {/* Search & View Toggle */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[240px]">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600">🔍</span>
@@ -481,7 +485,6 @@ export function OrdersPage({
         </div>
       </div>
 
-      {/* Results Info */}
       {query && (
         <p className="text-sm text-gray-600">
           Found <span className="text-gray-400 font-medium">{filteredOrders.length}</span> missions
@@ -489,7 +492,6 @@ export function OrdersPage({
         </p>
       )}
 
-      {/* Orders Display */}
       {filteredOrders.length === 0 ? (
         <EmptyState tab={activeTab} />
       ) : viewMode === "rows" ? (
@@ -524,7 +526,6 @@ export function OrdersPage({
         </div>
       )}
 
-      {/* Order Detail Modal */}
       {openedOrder && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm px-4 py-6"
