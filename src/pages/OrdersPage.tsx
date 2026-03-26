@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CreatedOrder } from "../types/order";
 import { OrderCard } from "../components/OrderCard";
+import { RunTable } from "../components/RunTable";
 
 interface OrdersPageProps {
   orders: CreatedOrder[];
@@ -32,7 +33,7 @@ const TABS: { key: TabType; label: string; icon: string }[] = [
   { key: "cancelled", label: "Cancelled", icon: "✕" },
 ];
 
-// 🔥 Bulk Order Group Type
+// Bulk Order Group Type
 interface BulkOrderGroup {
   bulkId: string;
   name: string;
@@ -55,8 +56,9 @@ export function OrdersPage({
   const [openedBulkId, setOpenedBulkId] = useState<string | null>(null);
   const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
   const [runStatusesCache, setRunStatusesCache] = useState<Record<string, any[]>>({});
+  const [expandedLinkId, setExpandedLinkId] = useState<string | null>(null); // 🔥 NEW: Track expanded link
 
-  // 🔥 Fetch run statuses from backend
+  // Fetch run statuses from backend
   useEffect(() => {
     const fetchAllStatuses = async () => {
       const uniqueLinks = [...new Set(orders.map(o => o.link))];
@@ -88,7 +90,7 @@ export function OrdersPage({
     }
   }, [orders]);
 
-  // 🔥 Separate bulk orders and single orders
+  // Separate bulk orders and single orders
   const { bulkGroups, singleOrders } = useMemo(() => {
     const bulkMap = new Map<string, CreatedOrder[]>();
     const singles: CreatedOrder[] = [];
@@ -115,7 +117,7 @@ export function OrdersPage({
     return { bulkGroups: bulks, singleOrders: singles };
   }, [orders]);
 
-  // 🔥 Get opened bulk group
+  // Get opened bulk group
   const openedBulkGroup = useMemo(() => {
     if (!openedBulkId) return null;
     return bulkGroups.find(g => g.bulkId === openedBulkId) || null;
@@ -260,7 +262,7 @@ export function OrdersPage({
     return "in <1m";
   }
 
-  // 🔥 Cancel a single link
+  // Cancel a single link
   const handleCancelLink = async (order: CreatedOrder) => {
     setCancellingOrderId(order.id);
     
@@ -280,7 +282,22 @@ export function OrdersPage({
     }
   };
 
-  // 🔥 Combined list: bulk groups + single orders
+  // 🔥 Cancel individual run
+  const handleCancelRun = async (runId: number | string) => {
+    try {
+      await fetch("https://backend-new-6tzb.onrender.com/api/cancel-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId }),
+      });
+      alert("Run cancelled successfully");
+    } catch (err) {
+      console.error("Failed to cancel run", err);
+      alert("Failed to cancel run");
+    }
+  };
+
+  // Combined list: bulk groups + single orders
   type DisplayItem = { type: "single"; order: CreatedOrder } | { type: "bulk"; bulk: BulkOrderGroup };
 
   const categorizedItems = useMemo(() => {
@@ -439,7 +456,7 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 Single Order Row
+  // Single Order Row
   function OrderTableRow({ order }: { order: CreatedOrder }) {
     const progress = getProgress(order);
     const status = getRealStatus(order);
@@ -491,10 +508,9 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 Bulk Order Row
+  // Bulk Order Row
   function BulkTableRow({ bulk }: { bulk: BulkOrderGroup }) {
     const progress = getBulkProgress(bulk);
-    const status = getBulkStatus(bulk);
 
     return (
       <tr
@@ -546,7 +562,7 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 Single Order Card
+  // Single Order Card
   function OrderCardItem({ order }: { order: CreatedOrder }) {
     const progress = getProgress(order);
     const status = getRealStatus(order);
@@ -597,7 +613,7 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 Bulk Order Card
+  // Bulk Order Card
   function BulkCardItem({ bulk }: { bulk: BulkOrderGroup }) {
     const progress = getBulkProgress(bulk);
 
@@ -645,7 +661,7 @@ export function OrdersPage({
     );
   }
 
-  // 🔥🔥🔥 BULK ORDER POPUP - Shows all links with individual cancel buttons
+  // 🔥🔥🔥 BULK ORDER POPUP - Shows all links with RunTable for each
   function BulkOrderPopup({ bulk, onClose }: { bulk: BulkOrderGroup; onClose: () => void }) {
     const progress = getBulkProgress(bulk);
 
@@ -655,7 +671,7 @@ export function OrdersPage({
         onClick={onClose}
       >
         <div
-          className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-2xl border border-purple-500/30 bg-gradient-to-br from-gray-900 to-black p-6 shadow-2xl"
+          className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-purple-500/30 bg-gradient-to-br from-gray-900 to-black p-6 shadow-2xl"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
@@ -696,7 +712,7 @@ export function OrdersPage({
           </div>
 
           {/* Individual Links */}
-          <div className="space-y-3">
+          <div className="space-y-4">
             <h4 className="text-sm font-semibold text-gray-400 flex items-center gap-2">
               <span>🔗</span> Individual Links
             </h4>
@@ -706,80 +722,98 @@ export function OrdersPage({
               const orderStatus = getRealStatus(order);
               const isCancelling = cancellingOrderId === order.id;
               const canCancel = orderStatus !== "cancelled" && orderStatus !== "completed";
+              const isExpanded = expandedLinkId === order.id;
+              const backendRuns = runStatusesCache[order.link] || [];
 
               return (
                 <div
                   key={order.id}
-                  className="rounded-xl border border-gray-800 bg-black/50 p-4 hover:border-gray-700 transition"
+                  className="rounded-xl border border-gray-800 bg-black/50 overflow-hidden"
                 >
-                  <div className="flex items-start justify-between gap-4">
-                    {/* Link Info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-purple-500/20 text-purple-400 text-xs font-bold">
-                          {index + 1}
-                        </span>
-                        <StatusBadge status={orderStatus} />
-                        <span className="text-[10px] text-gray-600 font-mono">{order.id}</span>
-                      </div>
-                      
-                      <p className="text-sm text-gray-300 break-all mb-3" title={order.link}>
-                        {order.link}
-                      </p>
-
-                      {/* Progress */}
-                      <div className="max-w-md">
-                        <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1">
-                          <span>{orderProgress.completed}/{orderProgress.total} runs</span>
-                          <span>{orderProgress.percent}%</span>
-                        </div>
-                        <ProgressBar percent={orderProgress.percent} size="small" />
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex flex-col gap-2 shrink-0">
-                      {/* Cancel Button */}
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`Cancel all runs for this link?\n\n${order.link}`)) {
-                            handleCancelLink(order);
-                          }
-                        }}
-                        disabled={!canCancel || isCancelling}
-                        className={`rounded-lg px-4 py-2 text-xs font-medium transition min-w-[100px] ${
-                          !canCancel
-                            ? "border border-gray-700 bg-gray-800/50 text-gray-600 cursor-not-allowed"
-                            : isCancelling
-                              ? "border border-yellow-500/50 bg-yellow-500/10 text-yellow-300"
-                              : "border border-red-500/50 bg-red-500/10 text-red-300 hover:bg-red-500/20"
-                        }`}
-                      >
-                        {isCancelling ? (
-                          <span className="flex items-center justify-center gap-1">
-                            <span className="animate-spin">⏳</span>
+                  {/* Link Header */}
+                  <div className="p-4 hover:bg-gray-900/50 transition">
+                    <div className="flex items-start justify-between gap-4">
+                      {/* Link Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-purple-500/20 text-purple-400 text-xs font-bold">
+                            {index + 1}
                           </span>
-                        ) : orderStatus === "cancelled" ? (
-                          "Cancelled"
-                        ) : orderStatus === "completed" ? (
-                          "Completed"
-                        ) : (
-                          "❌ Cancel"
-                        )}
-                      </button>
+                          <StatusBadge status={orderStatus} />
+                          <span className="text-[10px] text-gray-600 font-mono">{order.id}</span>
+                        </div>
+                        
+                        <p className="text-sm text-gray-300 break-all mb-3" title={order.link}>
+                          {order.link}
+                        </p>
 
-                      {/* View Details */}
-                      <button
-                        onClick={() => {
-                          onClose();
-                          setOpenedOrderId(order.id);
-                        }}
-                        className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-2 text-xs text-yellow-300 hover:bg-yellow-500/20 transition"
-                      >
-                        👁️ View Runs
-                      </button>
+                        {/* Progress */}
+                        <div className="max-w-md">
+                          <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1">
+                            <span>{orderProgress.completed}/{orderProgress.total} runs</span>
+                            <span>{orderProgress.percent}%</span>
+                          </div>
+                          <ProgressBar percent={orderProgress.percent} size="small" />
+                        </div>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex flex-col gap-2 shrink-0">
+                        {/* View Runs Button */}
+                        <button
+                          onClick={() => setExpandedLinkId(isExpanded ? null : order.id)}
+                          className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-2 text-xs text-yellow-300 hover:bg-yellow-500/20 transition"
+                        >
+                          {isExpanded ? "🔼 Hide Runs" : "🔽 View Runs"}
+                        </button>
+
+                        {/* Cancel Button */}
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Cancel all runs for this link?\n\n${order.link}`)) {
+                              handleCancelLink(order);
+                            }
+                          }}
+                          disabled={!canCancel || isCancelling}
+                          className={`rounded-lg px-4 py-2 text-xs font-medium transition min-w-[100px] ${
+                            !canCancel
+                              ? "border border-gray-700 bg-gray-800/50 text-gray-600 cursor-not-allowed"
+                              : isCancelling
+                                ? "border border-yellow-500/50 bg-yellow-500/10 text-yellow-300"
+                                : "border border-red-500/50 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                          }`}
+                        >
+                          {isCancelling ? (
+                            <span className="flex items-center justify-center gap-1">
+                              <span className="animate-spin">⏳</span>
+                            </span>
+                          ) : orderStatus === "cancelled" ? (
+                            "Cancelled"
+                          ) : orderStatus === "completed" ? (
+                            "Completed"
+                          ) : (
+                            "❌ Cancel"
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
+
+                  {/* 🔥 Expanded RunTable */}
+                  {isExpanded && (
+                    <div className="border-t border-gray-800 bg-gray-900/30 p-4">
+                      <h5 className="text-xs font-medium text-gray-400 mb-3 flex items-center gap-2">
+                        <span>📋</span> Run Schedule & Status
+                      </h5>
+                      <RunTable
+                        runs={order.runs || []}
+                        runStatuses={backendRuns}
+                        runErrors={order.runErrors || []}
+                        mode="logs"
+                        onCancelRun={handleCancelRun}
+                      />
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1016,11 +1050,14 @@ export function OrdersPage({
         </div>
       )}
 
-      {/* 🔥 Bulk Order Popup */}
+      {/* Bulk Order Popup */}
       {openedBulkGroup && (
         <BulkOrderPopup
           bulk={openedBulkGroup}
-          onClose={() => setOpenedBulkId(null)}
+          onClose={() => {
+            setOpenedBulkId(null);
+            setExpandedLinkId(null);
+          }}
         />
       )}
     </div>
