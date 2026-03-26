@@ -29,28 +29,66 @@ export function RunTable({
   const safeRuns = runs || [];
   const safeRunErrors = runErrors || [];
 
-  // 🔥 Get status from backend data
-  function getRunStatus(index: number): string {
-    const backendRun = runStatuses[index];
+  // 🔥 FIX: Match backend runs by TIME (not by index)
+  function getRunStatusByTime(runTime: Date | string): {
+    status: string;
+    smmOrderIds: string[];
+    backendRuns: BackendRunStatus[];
+  } {
+    const targetTime = runTime instanceof Date ? runTime.getTime() : new Date(runTime).getTime();
+    
+    // Find ALL backend runs that match this time (within 60 seconds tolerance)
+    const matchingRuns = runStatuses.filter((backendRun) => {
+      if (!backendRun.time) return false;
+      const backendTime = new Date(backendRun.time).getTime();
+      return Math.abs(backendTime - targetTime) < 60000; // 60 second tolerance
+    });
 
-    if (backendRun) {
-      if (backendRun.cancelled) return "cancelled";
-      
-      const status = (backendRun.smmStatus || "").toLowerCase();
-      
-      if (status === "completed" || status === "complete") return "completed";
-      if (status === "processing" || status === "in progress" || status === "pending" || status === "inprogress") {
-        return backendRun.smmOrderId ? "processing" : "pending";
-      }
-      if (status === "partial") return "partial";
-      if (status === "canceled" || status === "cancelled" || status === "refunded") return "cancelled";
-      if (status === "failed" || status === "error") return "failed";
-      
-      // If has smmOrderId but no clear status, it's processing
-      if (backendRun.smmOrderId) return "processing";
+    if (matchingRuns.length === 0) {
+      return { status: "pending", smmOrderIds: [], backendRuns: [] };
     }
 
-    return "pending";
+    const smmOrderIds = matchingRuns
+      .filter((r) => r.smmOrderId)
+      .map((r) => r.smmOrderId as string);
+
+    // Check statuses
+    const allStatuses = matchingRuns.map((r) => (r.smmStatus || "pending").toLowerCase());
+    
+    // If ALL are completed → completed
+    if (allStatuses.every((s) => s === "completed" || s === "complete")) {
+      return { status: "completed", smmOrderIds, backendRuns: matchingRuns };
+    }
+    
+    // If ANY is cancelled → cancelled
+    if (allStatuses.some((s) => s === "cancelled" || s === "canceled" || s === "refunded")) {
+      return { status: "cancelled", smmOrderIds, backendRuns: matchingRuns };
+    }
+    
+    // If ANY is processing → processing
+    if (allStatuses.some((s) => s === "processing" || s === "in progress" || s === "inprogress" || s === "pending")) {
+      // Check if any has smmOrderId (means it was sent to SMM panel)
+      if (matchingRuns.some((r) => r.smmOrderId)) {
+        return { status: "processing", smmOrderIds, backendRuns: matchingRuns };
+      }
+    }
+
+    // If ANY is partial → partial
+    if (allStatuses.some((s) => s === "partial")) {
+      return { status: "partial", smmOrderIds, backendRuns: matchingRuns };
+    }
+
+    // If ANY is failed → failed
+    if (allStatuses.some((s) => s === "failed" || s === "error")) {
+      return { status: "failed", smmOrderIds, backendRuns: matchingRuns };
+    }
+
+    // Check if order was placed (has smmOrderId)
+    if (matchingRuns.some((r) => r.smmOrderId)) {
+      return { status: "processing", smmOrderIds, backendRuns: matchingRuns };
+    }
+
+    return { status: "pending", smmOrderIds, backendRuns: matchingRuns };
   }
 
   function getStatusLabel(status: string): string {
@@ -93,7 +131,9 @@ export function RunTable({
             {safeRuns.map((run) => (
               <tr key={run.run} className="border-t border-slate-800/80 align-top">
                 <td className="px-3 py-2">#{run.run}</td>
-                <td className="px-3 py-2 text-slate-400">{run.at.toLocaleString()}</td>
+                <td className="px-3 py-2 text-slate-400">
+                  {run.at instanceof Date ? run.at.toLocaleString() : new Date(run.at).toLocaleString()}
+                </td>
                 <td className="px-3 py-2">{run.views}</td>
                 <td className="px-3 py-2">{run.likes}</td>
                 <td className="px-3 py-2">{run.shares}</td>
@@ -118,16 +158,15 @@ export function RunTable({
             <th className="px-3 py-2">Shares</th>
             <th className="px-3 py-2">Saves</th>
             <th className="px-3 py-2">Status</th>
-            <th className="px-3 py-2">SMM Order ID</th>
+            <th className="px-3 py-2">SMM Order IDs</th>
             <th className="px-3 py-2">Error</th>
             {onCancelRun && <th className="px-3 py-2">Action</th>}
           </tr>
         </thead>
         <tbody>
           {safeRuns.map((run, index) => {
-            const status = getRunStatus(index);
-            const backendRun = runStatuses[index];
-            const canCancel = status === "pending" && !backendRun?.smmOrderId;
+            const { status, smmOrderIds, backendRuns } = getRunStatusByTime(run.at);
+            const canCancel = status === "pending" && backendRuns.length > 0;
 
             return (
               <tr key={run.run} className="border-t border-slate-800/80 align-top hover:bg-slate-800/30">
@@ -143,8 +182,14 @@ export function RunTable({
                   {getStatusLabel(status)}
                 </td>
                 <td className="px-3 py-2">
-                  {backendRun?.smmOrderId ? (
-                    <span className="text-yellow-400 font-mono">{backendRun.smmOrderId}</span>
+                  {smmOrderIds.length > 0 ? (
+                    <div className="flex flex-col gap-0.5">
+                      {smmOrderIds.map((id, i) => (
+                        <span key={i} className="text-yellow-400 font-mono text-[10px]">
+                          {id}
+                        </span>
+                      ))}
+                    </div>
                   ) : (
                     <span className="text-gray-600">-</span>
                   )}
@@ -154,9 +199,16 @@ export function RunTable({
                 </td>
                 {onCancelRun && (
                   <td className="px-3 py-2">
-                    {canCancel && backendRun?.id && (
+                    {canCancel && (
                       <button
-                        onClick={() => onCancelRun(backendRun.id)}
+                        onClick={() => {
+                          // Cancel all matching backend runs
+                          backendRuns.forEach((br) => {
+                            if (br.id && !br.done && !br.cancelled) {
+                              onCancelRun(br.id);
+                            }
+                          });
+                        }}
                         className="rounded bg-red-500/20 px-2 py-1 text-[10px] text-red-300 hover:bg-red-500/30 transition"
                       >
                         Cancel
