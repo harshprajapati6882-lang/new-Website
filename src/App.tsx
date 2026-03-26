@@ -19,7 +19,6 @@ const NAV_ITEMS: { key: NavKey; label: string; icon: string }[] = [
   { key: "bundles", label: "Bundles", icon: "📁" },
 ];
 
-// 🦇 30 MOTIVATIONAL BATMAN QUOTES
 const BATMAN_QUOTES = [
   "It's not who I am underneath, but what I do that defines me.",
   "The night is darkest just before the dawn.",
@@ -134,7 +133,6 @@ function hydrateBundles(bundles: Bundle[]): Bundle[] {
 }
 
 export default function App() {
-  // 🦇 FIX: Load saved page from localStorage
   const [activePage, setActivePage] = useState<NavKey>(() => {
     const saved = localStorage.getItem("dev-smm-active-page");
     if (saved === "dashboard" || saved === "new-order" || saved === "orders" || saved === "apis" || saved === "bundles") {
@@ -151,10 +149,8 @@ export default function App() {
   const [fetchingApiId, setFetchingApiId] = useState<string | null>(null);
   const [controllingOrderId, setControllingOrderId] = useState<string | null>(null);
   
-  // 🦇 Random quote on each visit/refresh
   const [batmanQuote] = useState(() => getRandomQuote());
 
-  // 🦇 FIX: Helper function to change page and save to localStorage
   const navigateToPage = useCallback((page: NavKey) => {
     setActivePage(page);
     localStorage.setItem("dev-smm-active-page", page);
@@ -175,6 +171,16 @@ export default function App() {
     localStorage.setItem("dev-smm-bundles", JSON.stringify(next));
   }, []);
 
+  // 🔥 FIX: Handle both single order and array of orders (for bulk)
+  const handleCreateOrders = useCallback((newOrders: CreatedOrder | CreatedOrder[]) => {
+    setOrders((currentOrders) => {
+      const ordersArray = Array.isArray(newOrders) ? newOrders : [newOrders];
+      const updated = [...ordersArray, ...currentOrders];
+      localStorage.setItem("dev-smm-orders", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
   const content = useMemo(() => {
     if (activePage === "new-order") {
       return (
@@ -183,7 +189,7 @@ export default function App() {
           bundles={bundles}
           orders={orders}
           prefillOrder={cloneSourceOrder}
-          onCreateOrder={(order) => persistOrders([order, ...orders])}
+          onCreateOrder={handleCreateOrders} // 🔥 CHANGED
           onNavigateToOrders={(notice) => {
             if (notice) setOrdersNotice(notice);
             navigateToPage("orders");
@@ -379,14 +385,12 @@ export default function App() {
         }}
       />
     );
-  }, [activePage, apis, bundles, orders, fetchingApiId, controllingOrderId, ordersNotice, cloneSourceOrder, navigateToPage, persistOrders, persistApis, persistBundles]);
+  }, [activePage, apis, bundles, orders, fetchingApiId, controllingOrderId, ordersNotice, cloneSourceOrder, navigateToPage, persistOrders, persistApis, persistBundles, handleCreateOrders]);
 
   return (
     <div className="min-h-screen bg-black text-gray-100">
       <div className="flex min-h-screen">
-        {/* Batman Sidebar */}
         <aside className="w-64 border-r border-yellow-500/20 bg-gradient-to-b from-gray-950 to-black p-6">
-          {/* Batman Logo */}
           <div className="mb-8 space-y-1">
             <div className="flex items-center gap-3">
               <div className="relative">
@@ -400,7 +404,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Navigation */}
           <nav className="space-y-2">
             {NAV_ITEMS.map((item) => {
               const isActive = activePage === item.key;
@@ -435,7 +438,6 @@ export default function App() {
             })}
           </nav>
 
-          {/* 🦇 MOTIVATIONAL BATMAN QUOTE */}
           <motion.div 
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -454,13 +456,11 @@ export default function App() {
             <p className="mt-2 text-right text-[10px] font-medium text-yellow-600">— Batman</p>
           </motion.div>
 
-          {/* Refresh hint */}
           <div className="mt-4 rounded-lg border border-gray-800 bg-black/50 px-3 py-2 text-center">
             <p className="text-[10px] text-gray-600">Refresh for new wisdom 🔄</p>
           </div>
         </aside>
 
-        {/* Main Content */}
         <main className="flex-1 overflow-y-auto bg-gradient-to-br from-gray-950 via-black to-gray-950">{content}</main>
       </div>
     </div>
