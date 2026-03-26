@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { GrowthGraph } from "../components/GrowthGraph";
-import { OrderForm } from "../components/OrderForm";
 import { PatternGenerator } from "../components/PatternGenerator";
 import type {
   ApiPanel,
@@ -20,7 +19,7 @@ interface NewOrderPageProps {
   bundles: Bundle[];
   orders: CreatedOrder[];
   prefillOrder?: CreatedOrder | null;
-  onCreateOrder: (orders: CreatedOrder | CreatedOrder[]) => void; // 🔥 CHANGED: Accept array
+  onCreateOrder: (orders: CreatedOrder | CreatedOrder[]) => void;
   onNavigateToOrders: (notice?: string) => void;
 }
 
@@ -49,17 +48,26 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                     .slice(1)
                     .reduce((acc, run, index) => {
                       const prev = prefillRuns[index];
-                      return acc + (run.at.getTime() - prev.at.getTime()) / 60000;
+                      // FIX: guard against non-Date values from storage
+                      const prevTime = prev.at instanceof Date ? prev.at.getTime() : new Date(prev.at).getTime();
+                      const curTime = run.at instanceof Date ? run.at.getTime() : new Date(run.at).getTime();
+                      return acc + (curTime - prevTime) / 60000;
                     }, 0) / (prefillRuns.length - 1)
                 )
               )
             : 0,
-        finishTime: prefillRuns[prefillRuns.length - 1]?.at ?? new Date(),
+        finishTime: prefillRuns[prefillRuns.length - 1]?.at instanceof Date
+          ? prefillRuns[prefillRuns.length - 1].at
+          : new Date(prefillRuns[prefillRuns.length - 1]?.at ?? Date.now()),
         estimatedDurationHours:
           prefillRuns.length > 1
             ? Math.round(
-                ((prefillRuns[prefillRuns.length - 1]?.at.getTime() ?? Date.now()) -
-                  (prefillRuns[0]?.at.getTime() ?? Date.now())) /
+                ((prefillRuns[prefillRuns.length - 1]?.at instanceof Date
+                  ? prefillRuns[prefillRuns.length - 1].at.getTime()
+                  : new Date(prefillRuns[prefillRuns.length - 1]?.at ?? Date.now()).getTime()) -
+                  (prefillRuns[0]?.at instanceof Date
+                    ? prefillRuns[0].at.getTime()
+                    : new Date(prefillRuns[0]?.at ?? Date.now()).getTime())) /
                   3600000
               )
             : 0,
@@ -68,7 +76,9 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       }
     : null;
 
-  const [orderName, setOrderName] = useState(prefillOrder?.name && !prefillOrder.name.startsWith("Order #") ? prefillOrder.name : "");
+  const [orderName, setOrderName] = useState(
+    prefillOrder?.name && !prefillOrder.name.startsWith("Order #") ? prefillOrder.name : ""
+  );
   const [postUrl, setPostUrl] = useState(prefillOrder?.link ?? "");
   const [bulkLinks, setBulkLinks] = useState("");
   const [totalViews, setTotalViews] = useState(prefillOrder?.totalViews ?? 50000);
@@ -146,12 +156,12 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
   }, [config, seed]);
 
   const plan = useMemo(() => {
-    const basePlan = useClonedPlan && clonedPlan
-      ? { ...clonedPlan, runs: clonedPlan.runs || [] }
-      : generatedPlan;
+    const basePlan =
+      useClonedPlan && clonedPlan
+        ? { ...clonedPlan, runs: clonedPlan.runs || [] }
+        : generatedPlan;
 
     const runs = basePlan?.runs || [];
-
     if (runs.length <= 1) return basePlan;
 
     const baseIntervalMin = basePlan.approximateIntervalMin || 120;
@@ -159,11 +169,12 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     const newRuns = runs.map((run, i) => {
       if (i === 0) return run;
 
-      const prevTime = new Date(runs[i - 1].at).getTime();
+      // FIX: guard against stored string dates
+      const prevAt = runs[i - 1].at instanceof Date ? runs[i - 1].at : new Date(runs[i - 1].at);
+      const prevTime = prevAt.getTime();
       const hour = new Date(prevTime).getHours();
 
       let multiplier = 1;
-
       if (hour >= 0 && hour < 6) multiplier = 1.4;
       else if (hour >= 6 && hour < 12) multiplier = 1.1;
       else if (hour >= 18 && hour <= 23) multiplier = 0.85;
@@ -172,16 +183,10 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       const variation = baseIntervalMs * (Math.random() * 0.4 - 0.2);
       const newTime = prevTime + baseIntervalMs + variation;
 
-      return {
-        ...run,
-        at: new Date(newTime),
-      };
+      return { ...run, at: new Date(newTime) };
     });
 
-    return {
-      ...basePlan,
-      runs: newRuns,
-    };
+    return { ...basePlan, runs: newRuns };
   }, [useClonedPlan, clonedPlan, generatedPlan]);
 
   const safePlan = useMemo(() => ({ ...plan, runs: plan?.runs || [] }), [plan]);
@@ -198,6 +203,14 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     } catch {
       return false;
     }
+  }
+
+  // FIX: helper to safely get timestamp from a Date or string
+  function safeGetTime(val: Date | string | undefined): number {
+    if (!val) return Date.now();
+    if (val instanceof Date) return val.getTime();
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? Date.now() : d.getTime();
   }
 
   const handleApplyPreset = (preset: QuickPatternPreset) => {
@@ -219,13 +232,13 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       setVariancePercent(22);
       setDelivery({ mode: "preset", label: "48h", hours: 48 });
     }
-    setSeed((current) => current + 1);
+    setSeed((c) => c + 1);
     setExpandedRuns(false);
   };
 
   const handleGenerate = () => {
     setUseClonedPlan(false);
-    setSeed((current) => current + 1);
+    setSeed((c) => c + 1);
     setExpandedRuns(false);
   };
 
@@ -238,7 +251,6 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     { mode: "custom", label: "Custom", hours: customHours },
   ];
 
-  // 🔥 Handle Deploy - Fixed for bulk orders
   const handleDeploy = async () => {
     setCreateError("");
     setCreateSuccess("");
@@ -260,110 +272,70 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       return;
     }
 
-    const invalidTarget = targets.find((target) => !isValidUrl(target));
+    const invalidTarget = targets.find((t) => !isValidUrl(t));
     if (invalidTarget) {
-      setCreateError(`Invalid URL: ${invalidTarget.slice(0, 30)}...`);
+      setCreateError(`Invalid URL: ${invalidTarget.slice(0, 40)}...`);
       return;
     }
 
     const selectedApi = apis.find((api) => api.id === selectedApiId) ?? null;
-    if (!selectedApi) {
-      setCreateError("Select an API.");
-      return;
-    }
-    if (!selectedApi.url.trim()) {
-      setCreateError("API URL is required.");
-      return;
-    }
-    if (!isValidUrl(selectedApi.url.trim())) {
-      setCreateError("API URL must be valid.");
-      return;
-    }
-    if (!selectedApi.key.trim()) {
-      setCreateError("API key is required.");
-      return;
-    }
+    if (!selectedApi) { setCreateError("Select an API."); return; }
+    if (!selectedApi.url.trim()) { setCreateError("API URL is required."); return; }
+    if (!isValidUrl(selectedApi.url.trim())) { setCreateError("API URL must be valid."); return; }
+    if (!selectedApi.key.trim()) { setCreateError("API key is required."); return; }
 
-    const selectedBundle = bundles.find((bundle) => bundle.id === selectedBundleId);
-    if (!selectedBundle) {
-      setCreateError("Select a valid bundle.");
-      return;
-    }
+    const selectedBundle = bundles.find((b) => b.id === selectedBundleId);
+    if (!selectedBundle) { setCreateError("Select a valid bundle."); return; }
 
     const viewsServiceId = selectedBundle.serviceIds.views.trim();
-    if (!viewsServiceId) {
-      setCreateError("Bundle has no Views service.");
-      return;
-    }
+    if (!viewsServiceId) { setCreateError("Bundle has no Views service."); return; }
 
     const likesServiceId = selectedBundle.serviceIds.likes.trim();
     const sharesServiceId = selectedBundle.serviceIds.shares.trim();
     const savesServiceId = selectedBundle.serviceIds.saves.trim();
 
-    if (includeLikes && !likesServiceId) {
-      setCreateError("Bundle has no Likes service.");
-      return;
-    }
-    if (includeShares && !sharesServiceId) {
-      setCreateError("Bundle has no Shares service.");
-      return;
-    }
-    if (includeSaves && !savesServiceId) {
-      setCreateError("Bundle has no Saves service.");
-      return;
-    }
+    if (includeLikes && !likesServiceId) { setCreateError("Bundle has no Likes service."); return; }
+    if (includeShares && !sharesServiceId) { setCreateError("Bundle has no Shares service."); return; }
+    if (includeSaves && !savesServiceId) { setCreateError("Bundle has no Saves service."); return; }
 
     const quantity = (safePlan?.runs || []).reduce((acc, run) => acc + run.views, 0);
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      setCreateError("Quantity must be > 0.");
-      return;
-    }
-    if (quantity < 100) {
-      setCreateError("Views must be at least 100.");
-      return;
-    }
+    if (!Number.isFinite(quantity) || quantity <= 0) { setCreateError("Quantity must be > 0."); return; }
+    if (quantity < 100) { setCreateError("Views must be at least 100."); return; }
 
     const totalLikes = (safePlan?.runs || []).reduce((acc, run) => acc + run.likes, 0);
     const totalShares = (safePlan?.runs || []).reduce((acc, run) => acc + run.shares, 0);
     const totalSaves = (safePlan?.runs || []).reduce((acc, run) => acc + run.saves, 0);
 
-    if (includeLikes && totalLikes < 10) {
-      setCreateError("Likes must be at least 10.");
-      return;
-    }
-    if (includeShares && totalShares < 20) {
-      setCreateError("Shares must be at least 20.");
-      return;
-    }
-    if (includeSaves && totalSaves < 10) {
-      setCreateError("Saves must be at least 10.");
-      return;
-    }
+    if (includeLikes && totalLikes < 10) { setCreateError("Likes must be at least 10."); return; }
+    if (includeShares && totalShares < 20) { setCreateError("Shares must be at least 20."); return; }
+    if (includeSaves && totalSaves < 10) { setCreateError("Saves must be at least 10."); return; }
 
     if (quantity > 100000) {
       const proceed = window.confirm("Large mission. Continue?");
       if (!proceed) return;
     }
 
+    // FIX: Ensure run.at is always a proper Date before calling .toISOString()
     const viewRuns = (safePlan?.runs || []).map((run) => ({
-      time: run.at.toISOString(),
+      time: (run.at instanceof Date ? run.at : new Date(run.at)).toISOString(),
       quantity: Math.floor(run.views),
     }));
-    if (!viewRuns.length || viewRuns.some((run) => !run.time || !Number.isFinite(run.quantity) || run.quantity <= 0)) {
+
+    if (!viewRuns.length || viewRuns.some((r) => !r.time || !Number.isFinite(r.quantity) || r.quantity <= 0)) {
       setCreateError("Invalid run schedule. Regenerate.");
       return;
     }
 
     const likesRuns = (safePlan?.runs || []).map((run) => ({
-      time: run.at.toISOString(),
+      time: (run.at instanceof Date ? run.at : new Date(run.at)).toISOString(),
       quantity: Math.max(0, Math.floor(run.likes)),
     }));
     const sharesRuns = (safePlan?.runs || []).map((run) => ({
-      time: run.at.toISOString(),
+      time: (run.at instanceof Date ? run.at : new Date(run.at)).toISOString(),
       quantity: Math.max(0, Math.floor(run.shares)),
     }));
     const savesRuns = (safePlan?.runs || []).map((run) => ({
-      time: run.at.toISOString(),
+      time: (run.at instanceof Date ? run.at : new Date(run.at)).toISOString(),
       quantity: Math.max(0, Math.floor(run.saves)),
     }));
 
@@ -372,18 +344,15 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       likes?: { serviceId: string; runs: Array<{ time: string; quantity: number }> };
       shares?: { serviceId: string; runs: Array<{ time: string; quantity: number }> };
       saves?: { serviceId: string; runs: Array<{ time: string; quantity: number }> };
-    } = {
-      views: { serviceId: viewsServiceId, runs: viewRuns },
-    };
+    } = { views: { serviceId: viewsServiceId, runs: viewRuns } };
 
     if (includeLikes) servicesPayload.likes = { serviceId: likesServiceId, runs: likesRuns };
     if (includeShares) servicesPayload.shares = { serviceId: sharesServiceId, runs: sharesRuns };
     if (includeSaves) servicesPayload.saves = { serviceId: savesServiceId, runs: savesRuns };
 
     setIsCreatingOrder(true);
-    setCreateSuccess(`Processing ${targets.length} missions...`);
+    setCreateSuccess(`Processing ${targets.length} mission(s)...`);
 
-    // 🔥 FIX: Collect all orders first, then save once
     const createdOrders: CreatedOrder[] = [];
     const activeLinks = new Set(
       orders
@@ -391,8 +360,8 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
           const now = Date.now();
           const runs = order.runs || [];
           if (!runs.length) return false;
-          const allRunsCompleted = runs.every((run) => new Date(run.at).getTime() <= now);
-          return !allRunsCompleted && order.status !== "cancelled";
+          const allDone = runs.every((run) => safeGetTime(run.at) <= now);
+          return !allDone && order.status !== "cancelled";
         })
         .map((order) => order.link.replace(/\/+$/, "").toLowerCase())
     );
@@ -401,33 +370,34 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     let failedCount = 0;
     let lastError = "";
 
-    // 🔥 Generate a bulk ID to group these orders
     const bulkId = targets.length > 1 ? `BULK-${Date.now()}` : null;
 
     try {
-      for (let index = 0; index < targets.length; index += 1) {
+      for (let index = 0; index < targets.length; index++) {
         const trimmedUrl = targets[index];
         const normalizedTarget = trimmedUrl.replace(/\/+$/, "").toLowerCase();
 
         if (activeLinks.has(normalizedTarget) || createdLinks.has(normalizedTarget)) {
-          failedCount += 1;
+          failedCount++;
           lastError = "Duplicate link.";
           continue;
         }
 
         try {
+          // FIX: pass name and startDelayHours to createSmmOrder
           const result = await createSmmOrder({
             name: orderName.trim() || undefined,
             apiUrl: selectedApi.url,
             apiKey: selectedApi.key,
             link: trimmedUrl,
+            startDelayHours,   // FIX: was missing
             services: servicesPayload,
           });
 
           const order: CreatedOrder = {
             id: createOrderId(),
             name: orderName.trim() || "",
-            schedulerOrderId: result.schedulerOrderId,
+            schedulerOrderId: result.schedulerOrderId, // FIX: now actually set by backend
             smmOrderId: result.orderId ?? "Scheduled",
             link: trimmedUrl,
             totalViews: quantity,
@@ -444,10 +414,9 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             runStatuses: (safePlan?.runs || []).map(() => "pending"),
             createdAt: new Date().toISOString(),
             lastUpdatedAt: new Date().toISOString(),
-            bulkId: bulkId, // 🔥 NEW: Add bulk ID
-          } as CreatedOrder;
+            bulkId: bulkId ?? undefined,
+          };
 
-          // Set name
           if (!order.name) {
             order.name = `Mission #${order.id}`;
           } else if (targets.length > 1) {
@@ -456,7 +425,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
 
           createdOrders.push(order);
           createdLinks.add(normalizedTarget);
-          successCount += 1;
+          successCount++;
         } catch (error) {
           const message = error instanceof Error ? error.message : "Failed";
 
@@ -481,8 +450,8 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             errorMessage: message,
             createdAt: new Date().toISOString(),
             lastUpdatedAt: new Date().toISOString(),
-            bulkId: bulkId, // 🔥 NEW: Add bulk ID
-          } as CreatedOrder;
+            bulkId: bulkId ?? undefined,
+          };
 
           if (!failedOrder.name) {
             failedOrder.name = `Mission #${failedOrder.id}`;
@@ -491,12 +460,11 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
           }
 
           createdOrders.push(failedOrder);
-          failedCount += 1;
+          failedCount++;
           lastError = message;
         }
       }
 
-      // 🔥 FIX: Save ALL orders at once
       if (createdOrders.length > 0) {
         onCreateOrder(createdOrders);
       }
@@ -507,9 +475,10 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
         return;
       }
 
-      const successLabel = targets.length > 1
-        ? `Done: ${successCount}/${targets.length} links deployed`
-        : "Mission Deployed ✅";
+      const successLabel =
+        targets.length > 1
+          ? `Done: ${successCount}/${targets.length} links deployed`
+          : "Mission Deployed ✅";
       setCreateSuccess(successLabel);
       if (failedCount > 0) setCreateError(`${failedCount} failed`);
       onNavigateToOrders(successLabel);
@@ -529,10 +498,11 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       </motion.div>
 
       <div className="grid gap-3 xl:grid-cols-2">
+        {/* LEFT COLUMN */}
         <div className="space-y-2">
           <div className="rounded-xl border border-yellow-500/20 bg-gradient-to-br from-gray-900 to-black p-3">
             <h3 className="text-xs font-semibold text-yellow-400 mb-2">📋 Order Details</h3>
-            
+
             <div className="grid grid-cols-2 gap-2 mb-2">
               <div>
                 <label className="text-[10px] text-gray-500 mb-1 block">Order Name</label>
@@ -551,8 +521,8 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                   value={totalViews}
                   onChange={(e) => {
                     setUseClonedPlan(false);
-                    const safeValue = Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 0;
-                    setTotalViews(Math.max(0, Math.floor(safeValue)));
+                    const safe = Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 0;
+                    setTotalViews(Math.max(0, Math.floor(safe)));
                   }}
                   className="w-full rounded-lg border border-yellow-500/20 bg-black px-2 py-1.5 text-xs text-white focus:border-yellow-500/50 focus:outline-none"
                 />
@@ -572,10 +542,10 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
 
             <div className="mb-2">
               <label className="text-[10px] text-gray-500 mb-1 block">
-                Bulk Links (one per line) 
-                {bulkLinks.split('\n').filter(l => l.trim()).length > 0 && (
+                Bulk Links (one per line)
+                {bulkLinks.split("\n").filter((l) => l.trim()).length > 0 && (
                   <span className="ml-2 text-purple-400">
-                    📦 {bulkLinks.split('\n').filter(l => l.trim()).length} links
+                    📦 {bulkLinks.split("\n").filter((l) => l.trim()).length} links
                   </span>
                 )}
               </label>
@@ -621,7 +591,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             </div>
           </div>
 
-          <GrowthGraph 
+          <GrowthGraph
             plan={safePlan}
             selectedPreset={quickPreset}
             onApplyPreset={handleApplyPreset}
@@ -629,6 +599,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
           />
         </div>
 
+        {/* RIGHT COLUMN */}
         <div className="space-y-2">
           <div className="flex items-center justify-between rounded-lg border border-yellow-500/20 bg-gradient-to-br from-gray-900 to-black px-3 py-2">
             <div className="flex items-center gap-2">
@@ -637,13 +608,15 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[10px] text-gray-500">{safePlan.estimatedDurationHours}h duration</span>
-              <span className={`rounded-md border px-2 py-0.5 text-xs font-semibold ${
-                safePlan.risk === "Safe"
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                  : safePlan.risk === "Medium"
-                    ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                    : "border-red-500/30 bg-red-500/10 text-red-400"
-              }`}>
+              <span
+                className={`rounded-md border px-2 py-0.5 text-xs font-semibold ${
+                  safePlan.risk === "Safe"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                    : safePlan.risk === "Medium"
+                      ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+                      : "border-red-500/30 bg-red-500/10 text-red-400"
+                }`}
+              >
                 {safePlan.risk}
               </span>
             </div>
@@ -652,12 +625,12 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
           <PatternGenerator
             plan={safePlan}
             expandedRuns={expandedRuns}
-            onToggleRuns={() => setExpandedRuns((prev) => !prev)}
+            onToggleRuns={() => setExpandedRuns((p) => !p)}
           />
 
           <div className="rounded-xl border border-yellow-500/20 bg-gradient-to-br from-gray-900 to-black p-3">
             <h3 className="text-xs font-semibold text-yellow-400 mb-2">⚙️ Advanced Controls</h3>
-            
+
             <div className="grid grid-cols-2 gap-2 mb-2">
               <div>
                 <label className="text-[10px] text-gray-500 mb-1 block">Start Delay (hours)</label>
@@ -666,8 +639,8 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                   value={startDelayHours}
                   onChange={(e) => {
                     setUseClonedPlan(false);
-                    const safeValue = Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 0;
-                    setStartDelayHours(Math.max(0, Math.min(168, Math.floor(safeValue))));
+                    const safe = Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 0;
+                    setStartDelayHours(Math.max(0, Math.min(168, Math.floor(safe))));
                   }}
                   min={0}
                   max={168}
@@ -717,10 +690,10 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                   value={customHours}
                   onChange={(e) => {
                     setUseClonedPlan(false);
-                    const safeHours = Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 1;
-                    const clampedHours = Math.max(1, Math.min(96, safeHours));
-                    setCustomHours(clampedHours);
-                    setDelivery({ mode: "custom", label: "Custom", hours: clampedHours });
+                    const safe = Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 1;
+                    const clamped = Math.max(1, Math.min(96, safe));
+                    setCustomHours(clamped);
+                    setDelivery({ mode: "custom", label: "Custom", hours: clamped });
                   }}
                   min={1}
                   max={96}
@@ -732,42 +705,25 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
 
             <div className="flex flex-wrap items-center gap-2">
               <label className="text-[10px] text-gray-500">Engagement:</label>
-              
-              <button
-                type="button"
-                onClick={() => { setUseClonedPlan(false); setIncludeLikes(!includeLikes); }}
-                className={`flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition ${
-                  includeLikes
-                    ? "border border-pink-500 bg-pink-500/20 text-pink-300"
-                    : "border border-gray-600 bg-black text-gray-500"
-                }`}
-              >
-                ❤️ Likes
-              </button>
-              
-              <button
-                type="button"
-                onClick={() => { setUseClonedPlan(false); setIncludeShares(!includeShares); }}
-                className={`flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition ${
-                  includeShares
-                    ? "border border-blue-500 bg-blue-500/20 text-blue-300"
-                    : "border border-gray-600 bg-black text-gray-500"
-                }`}
-              >
-                🔄 Shares
-              </button>
-              
-              <button
-                type="button"
-                onClick={() => { setUseClonedPlan(false); setIncludeSaves(!includeSaves); }}
-                className={`flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition ${
-                  includeSaves
-                    ? "border border-purple-500 bg-purple-500/20 text-purple-300"
-                    : "border border-gray-600 bg-black text-gray-500"
-                }`}
-              >
-                💾 Saves
-              </button>
+
+              {[
+                { label: "❤️ Likes", value: includeLikes, setter: setIncludeLikes, color: "pink" },
+                { label: "🔄 Shares", value: includeShares, setter: setIncludeShares, color: "blue" },
+                { label: "💾 Saves", value: includeSaves, setter: setIncludeSaves, color: "purple" },
+              ].map(({ label, value, setter, color }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => { setUseClonedPlan(false); setter(!value); }}
+                  className={`flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition ${
+                    value
+                      ? `border border-${color}-500 bg-${color}-500/20 text-${color}-300`
+                      : "border border-gray-600 bg-black text-gray-500"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
 
               <div className="ml-auto">
                 <button
@@ -785,86 +741,51 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             </div>
           </div>
 
+          {/* Cost breakdown */}
           {selectedBundleId && safePlan.runs.length > 0 && (
             <div className="rounded-lg border border-yellow-500/30 bg-gradient-to-br from-yellow-500/5 to-black p-2">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-xs font-semibold text-yellow-400">💰</span>
-                
+
                 <div className="flex items-center gap-1 flex-wrap flex-1">
                   {(() => {
-                    const selectedBundle = bundles.find(b => b.id === selectedBundleId);
-                    const selectedApi = apis.find(a => a.id === selectedApiId);
-                    
-                    if (!selectedBundle || !selectedApi) return null;
-                    
-                    const viewsService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.views);
-                    const likesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.likes);
-                    const sharesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.shares);
-                    const savesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.saves);
-                    
-                    const totalViewsQty = safePlan.runs.reduce((sum, run) => sum + (run.views || 0), 0);
-                    const totalLikesQty = safePlan.runs.reduce((sum, run) => sum + (run.likes || 0), 0);
-                    const totalSharesQty = safePlan.runs.reduce((sum, run) => sum + (run.shares || 0), 0);
-                    const totalSavesQty = safePlan.runs.reduce((sum, run) => sum + (run.saves || 0), 0);
-                    
-                    const viewsRate = parseFloat(viewsService?.rate || "0");
-                    const likesRate = parseFloat(likesService?.rate || "0");
-                    const sharesRate = parseFloat(sharesService?.rate || "0");
-                    const savesRate = parseFloat(savesService?.rate || "0");
-                    
-                    const viewsPrice = (totalViewsQty / 1000) * viewsRate;
-                    const likesPrice = includeLikes ? (totalLikesQty / 1000) * likesRate : 0;
-                    const sharesPrice = includeShares ? (totalSharesQty / 1000) * sharesRate : 0;
-                    const savesPrice = includeSaves ? (totalSavesQty / 1000) * savesRate : 0;
-                    
+                    const selBundle = bundles.find((b) => b.id === selectedBundleId);
+                    const selApi = apis.find((a) => a.id === selectedApiId);
+                    if (!selBundle || !selApi) return null;
+
+                    const vs = selApi.services.find((s) => s.id === selBundle.serviceIds.views);
+                    const ls = selApi.services.find((s) => s.id === selBundle.serviceIds.likes);
+                    const ss = selApi.services.find((s) => s.id === selBundle.serviceIds.shares);
+                    const savs = selApi.services.find((s) => s.id === selBundle.serviceIds.saves);
+
+                    const vq = safePlan.runs.reduce((s, r) => s + (r.views || 0), 0);
+                    const lq = safePlan.runs.reduce((s, r) => s + (r.likes || 0), 0);
+                    const sq = safePlan.runs.reduce((s, r) => s + (r.shares || 0), 0);
+                    const savq = safePlan.runs.reduce((s, r) => s + (r.saves || 0), 0);
+
+                    const vRate = parseFloat(vs?.rate || "0");
+                    const lRate = parseFloat(ls?.rate || "0");
+                    const sRate = parseFloat(ss?.rate || "0");
+                    const savRate = parseFloat(savs?.rate || "0");
+
+                    const vPrice = (vq / 1000) * vRate;
+                    const lPrice = includeLikes ? (lq / 1000) * lRate : 0;
+                    const sPrice = includeShares ? (sq / 1000) * sRate : 0;
+                    const savPrice = includeSaves ? (savq / 1000) * savRate : 0;
+                    const total = vPrice + lPrice + sPrice + savPrice;
+
                     return (
                       <>
-                        <span className="text-[10px] text-gray-400">👁️{(totalViewsQty/1000).toFixed(0)}k=₹{viewsPrice.toFixed(0)}</span>
-                        {includeLikes && totalLikesQty > 0 && (
-                          <span className="text-[10px] text-gray-400">❤️{(totalLikesQty/1000).toFixed(1)}k=₹{likesPrice.toFixed(0)}</span>
-                        )}
-                        {includeShares && totalSharesQty > 0 && (
-                          <span className="text-[10px] text-gray-400">🔄{(totalSharesQty/1000).toFixed(1)}k=₹{sharesPrice.toFixed(0)}</span>
-                        )}
-                        {includeSaves && totalSavesQty > 0 && (
-                          <span className="text-[10px] text-gray-400">💾{(totalSavesQty/1000).toFixed(1)}k=₹{savesPrice.toFixed(0)}</span>
-                        )}
+                        <span className="text-[10px] text-gray-400">👁️{(vq / 1000).toFixed(0)}k=₹{vPrice.toFixed(0)}</span>
+                        {includeLikes && lq > 0 && <span className="text-[10px] text-gray-400">❤️{(lq / 1000).toFixed(1)}k=₹{lPrice.toFixed(0)}</span>}
+                        {includeShares && sq > 0 && <span className="text-[10px] text-gray-400">🔄{(sq / 1000).toFixed(1)}k=₹{sPrice.toFixed(0)}</span>}
+                        {includeSaves && savq > 0 && <span className="text-[10px] text-gray-400">💾{(savq / 1000).toFixed(1)}k=₹{savPrice.toFixed(0)}</span>}
+                        <div className="ml-auto rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-1">
+                          <span className="text-sm font-bold text-yellow-400">₹{total.toFixed(0)}</span>
+                        </div>
                       </>
                     );
                   })()}
-                </div>
-                
-                <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-1">
-                  <span className="text-sm font-bold text-yellow-400">
-                    ₹{(() => {
-                      const selectedBundle = bundles.find(b => b.id === selectedBundleId);
-                      const selectedApi = apis.find(a => a.id === selectedApiId);
-                      
-                      if (!selectedBundle || !selectedApi) return "0";
-                      
-                      const viewsService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.views);
-                      const likesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.likes);
-                      const sharesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.shares);
-                      const savesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.saves);
-                      
-                      const totalViewsQty = safePlan.runs.reduce((sum, run) => sum + (run.views || 0), 0);
-                      const totalLikesQty = safePlan.runs.reduce((sum, run) => sum + (run.likes || 0), 0);
-                      const totalSharesQty = safePlan.runs.reduce((sum, run) => sum + (run.shares || 0), 0);
-                      const totalSavesQty = safePlan.runs.reduce((sum, run) => sum + (run.saves || 0), 0);
-                      
-                      const viewsRate = parseFloat(viewsService?.rate || "0");
-                      const likesRate = parseFloat(likesService?.rate || "0");
-                      const sharesRate = parseFloat(sharesService?.rate || "0");
-                      const savesRate = parseFloat(savesService?.rate || "0");
-                      
-                      const viewsPrice = (totalViewsQty / 1000) * viewsRate;
-                      const likesPrice = includeLikes ? (totalLikesQty / 1000) * likesRate : 0;
-                      const sharesPrice = includeShares ? (totalSharesQty / 1000) * sharesRate : 0;
-                      const savesPrice = includeSaves ? (totalSavesQty / 1000) * savesRate : 0;
-                      
-                      return (viewsPrice + likesPrice + sharesPrice + savesPrice).toFixed(0);
-                    })()}
-                  </span>
                 </div>
               </div>
             </div>
@@ -872,11 +793,14 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
         </div>
       </div>
 
+      {/* Deploy bar */}
       <div className="flex items-center justify-between rounded-lg border border-yellow-500/20 bg-gradient-to-br from-gray-900 to-black px-3 py-2">
         <div className="flex items-center gap-2">
           {createError && <span className="text-[10px] text-red-400">❌ {createError}</span>}
           {createSuccess && <span className="text-[10px] text-emerald-400">✅ {createSuccess}</span>}
-          {!createError && !createSuccess && <span className="text-[10px] text-gray-500">Ready to deploy mission</span>}
+          {!createError && !createSuccess && (
+            <span className="text-[10px] text-gray-500">Ready to deploy mission</span>
+          )}
         </div>
         <button
           type="button"
