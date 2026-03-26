@@ -117,4 +117,5 @@ export interface CreatedOrder {
   errorMessage?: string;
   createdAt: string;
   lastUpdatedAt?: string;
+  bulkId?: string; // 🔥 NEW: Groups bulk orders together
 }
