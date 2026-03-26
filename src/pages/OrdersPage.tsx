@@ -23,7 +23,6 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; dot: string }> =
   cancelled: { bg: "bg-red-500/15", text: "text-red-300", dot: "bg-red-400" },
   pending: { bg: "bg-gray-500/15", text: "text-gray-300", dot: "bg-gray-400" },
   failed: { bg: "bg-red-500/15", text: "text-red-300", dot: "bg-red-400" },
-  bulk: { bg: "bg-purple-500/15", text: "text-purple-300", dot: "bg-purple-400" },
 };
 
 const TABS: { key: TabType; label: string; icon: string }[] = [
@@ -33,15 +32,12 @@ const TABS: { key: TabType; label: string; icon: string }[] = [
   { key: "cancelled", label: "Cancelled", icon: "✕" },
 ];
 
-// 🔥 Type for bulk order group
+// 🔥 Bulk Order Group Type
 interface BulkOrderGroup {
-  id: string;
+  bulkId: string;
   name: string;
   createdAt: string;
   orders: CreatedOrder[];
-  totalLinks: number;
-  completedLinks: number;
-  cancelledLinks: number;
 }
 
 export function OrdersPage({
@@ -56,9 +52,9 @@ export function OrdersPage({
   const [viewMode, setViewMode] = useState<ViewMode>("rows");
   const [activeTab, setActiveTab] = useState<TabType>("running");
   const [openedOrderId, setOpenedOrderId] = useState<string | null>(null);
-  const [openedBulkId, setOpenedBulkId] = useState<string | null>(null); // 🔥 NEW: For bulk popup
+  const [openedBulkId, setOpenedBulkId] = useState<string | null>(null);
+  const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
   const [runStatusesCache, setRunStatusesCache] = useState<Record<string, any[]>>({});
-  const [cancellingLink, setCancellingLink] = useState<string | null>(null); // 🔥 NEW: Track cancelling
 
   // 🔥 Fetch run statuses from backend
   useEffect(() => {
@@ -85,57 +81,44 @@ export function OrdersPage({
       setRunStatusesCache(newCache);
     };
 
-    fetchAllStatuses();
-    const interval = setInterval(fetchAllStatuses, 15000);
-    return () => clearInterval(interval);
+    if (orders.length > 0) {
+      fetchAllStatuses();
+      const interval = setInterval(fetchAllStatuses, 15000);
+      return () => clearInterval(interval);
+    }
   }, [orders]);
 
-  // 🔥 Group orders into bulk groups (same creation timestamp = same bulk)
+  // 🔥 Separate bulk orders and single orders
   const { bulkGroups, singleOrders } = useMemo(() => {
-    const timeGroups = new Map<string, CreatedOrder[]>();
-    
+    const bulkMap = new Map<string, CreatedOrder[]>();
+    const singles: CreatedOrder[] = [];
+
     orders.forEach(order => {
-      // Group by timestamp (same second = same bulk order)
-      const timeKey = new Date(order.createdAt).toISOString().slice(0, 19);
-      const existing = timeGroups.get(timeKey) || [];
-      timeGroups.set(timeKey, [...existing, order]);
+      if (order.bulkId) {
+        const existing = bulkMap.get(order.bulkId) || [];
+        bulkMap.set(order.bulkId, [...existing, order]);
+      } else {
+        singles.push(order);
+      }
     });
 
     const bulks: BulkOrderGroup[] = [];
-    const singles: CreatedOrder[] = [];
-
-    timeGroups.forEach((groupOrders, timeKey) => {
-      if (groupOrders.length > 1) {
-        // This is a bulk order
-        const completedLinks = groupOrders.filter(o => 
-          o.status === "completed" || getRealStatus(o) === "completed"
-        ).length;
-        const cancelledLinks = groupOrders.filter(o => 
-          o.status === "cancelled" || o.status === "failed"
-        ).length;
-
-        bulks.push({
-          id: `bulk-${timeKey}`,
-          name: groupOrders[0].name?.replace(/#\d+$/, '').trim() || "Bulk Order",
-          createdAt: groupOrders[0].createdAt,
-          orders: groupOrders,
-          totalLinks: groupOrders.length,
-          completedLinks,
-          cancelledLinks,
-        });
-      } else {
-        // Single order
-        singles.push(groupOrders[0]);
-      }
+    bulkMap.forEach((groupOrders, bulkId) => {
+      bulks.push({
+        bulkId,
+        name: groupOrders[0]?.name?.replace(/#\d+$/, '').trim() || "Bulk Order",
+        createdAt: groupOrders[0]?.createdAt || new Date().toISOString(),
+        orders: groupOrders.sort((a, b) => a.name.localeCompare(b.name)),
+      });
     });
 
     return { bulkGroups: bulks, singleOrders: singles };
   }, [orders]);
 
-  // 🔥 Get the opened bulk group
+  // 🔥 Get opened bulk group
   const openedBulkGroup = useMemo(() => {
     if (!openedBulkId) return null;
-    return bulkGroups.find(g => g.id === openedBulkId) || null;
+    return bulkGroups.find(g => g.bulkId === openedBulkId) || null;
   }, [bulkGroups, openedBulkId]);
 
   function getProgress(order: CreatedOrder) {
@@ -166,6 +149,25 @@ export function OrdersPage({
       percent: Math.round((completed / totalRuns) * 100),
       completed,
       total: totalRuns,
+    };
+  }
+
+  function getBulkProgress(bulk: BulkOrderGroup) {
+    let totalRuns = 0;
+    let completedRuns = 0;
+
+    bulk.orders.forEach(order => {
+      const progress = getProgress(order);
+      totalRuns += progress.total;
+      completedRuns += progress.completed;
+    });
+
+    return {
+      percent: totalRuns > 0 ? Math.round((completedRuns / totalRuns) * 100) : 0,
+      completed: completedRuns,
+      total: totalRuns,
+      completedLinks: bulk.orders.filter(o => getProgress(o).percent === 100).length,
+      totalLinks: bulk.orders.length,
     };
   }
 
@@ -201,13 +203,11 @@ export function OrdersPage({
   }
 
   function getBulkStatus(bulk: BulkOrderGroup): string {
-    if (bulk.cancelledLinks === bulk.totalLinks) return "cancelled";
-    if (bulk.completedLinks === bulk.totalLinks) return "completed";
-    if (bulk.completedLinks > 0 || bulk.cancelledLinks > 0) return "running";
+    const statuses = bulk.orders.map(o => getRealStatus(o));
     
-    // Check if all scheduled
-    const allScheduled = bulk.orders.every(o => getRealStatus(o) === "scheduled");
-    if (allScheduled) return "scheduled";
+    if (statuses.every(s => s === "cancelled")) return "cancelled";
+    if (statuses.every(s => s === "completed")) return "completed";
+    if (statuses.every(s => s === "scheduled")) return "scheduled";
     
     return "running";
   }
@@ -260,11 +260,9 @@ export function OrdersPage({
     return "in <1m";
   }
 
-  // 🔥 Cancel a single link from bulk
+  // 🔥 Cancel a single link
   const handleCancelLink = async (order: CreatedOrder) => {
-    if (!window.confirm(`Cancel all runs for this link?\n\n${order.link}`)) return;
-
-    setCancellingLink(order.link);
+    setCancellingOrderId(order.id);
     
     try {
       await fetch("https://backend-new-6tzb.onrender.com/api/cancel", {
@@ -278,37 +276,47 @@ export function OrdersPage({
       console.error("Failed to cancel link", err);
       alert("Failed to cancel. Please try again.");
     } finally {
-      setCancellingLink(null);
+      setCancellingOrderId(null);
     }
   };
 
-  const categorizedOrders = useMemo(() => {
-    const running: (CreatedOrder | BulkOrderGroup)[] = [];
-    const completed: (CreatedOrder | BulkOrderGroup)[] = [];
-    const scheduled: (CreatedOrder | BulkOrderGroup)[] = [];
-    const cancelled: (CreatedOrder | BulkOrderGroup)[] = [];
+  // 🔥 Combined list: bulk groups + single orders
+  type DisplayItem = { type: "single"; order: CreatedOrder } | { type: "bulk"; bulk: BulkOrderGroup };
+
+  const categorizedItems = useMemo(() => {
+    const running: DisplayItem[] = [];
+    const completed: DisplayItem[] = [];
+    const scheduled: DisplayItem[] = [];
+    const cancelled: DisplayItem[] = [];
 
     // Add single orders
     singleOrders.forEach((order) => {
       const category = getOrderCategory(order);
-      if (category === "running") running.push(order);
-      else if (category === "completed") completed.push(order);
-      else if (category === "scheduled") scheduled.push(order);
-      else if (category === "cancelled") cancelled.push(order);
+      const item: DisplayItem = { type: "single", order };
+      
+      if (category === "running") running.push(item);
+      else if (category === "completed") completed.push(item);
+      else if (category === "scheduled") scheduled.push(item);
+      else if (category === "cancelled") cancelled.push(item);
     });
 
     // Add bulk groups
     bulkGroups.forEach((bulk) => {
       const category = getBulkCategory(bulk);
-      if (category === "running") running.push(bulk);
-      else if (category === "completed") completed.push(bulk);
-      else if (category === "scheduled") scheduled.push(bulk);
-      else if (category === "cancelled") cancelled.push(bulk);
+      const item: DisplayItem = { type: "bulk", bulk };
+      
+      if (category === "running") running.push(item);
+      else if (category === "completed") completed.push(item);
+      else if (category === "scheduled") scheduled.push(item);
+      else if (category === "cancelled") cancelled.push(item);
     });
 
     // Sort by creation date
-    const sortByDate = (a: any, b: any) => 
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    const sortByDate = (a: DisplayItem, b: DisplayItem) => {
+      const dateA = a.type === "single" ? a.order.createdAt : a.bulk.createdAt;
+      const dateB = b.type === "single" ? b.order.createdAt : b.bulk.createdAt;
+      return new Date(dateB).getTime() - new Date(dateA).getTime();
+    };
 
     running.sort(sortByDate);
     completed.sort(sortByDate);
@@ -318,29 +326,27 @@ export function OrdersPage({
     return { running, completed, scheduled, cancelled };
   }, [singleOrders, bulkGroups, runStatusesCache]);
 
-  const filteredOrders = useMemo(() => {
-    const ordersForTab = categorizedOrders[activeTab];
+  const filteredItems = useMemo(() => {
+    const itemsForTab = categorizedItems[activeTab];
     const value = query.trim().toLowerCase();
 
-    if (!value) return ordersForTab;
+    if (!value) return itemsForTab;
 
-    return ordersForTab.filter((item) => {
-      if ('orders' in item) {
-        // Bulk group
+    return itemsForTab.filter((item) => {
+      if (item.type === "bulk") {
         return (
-          item.name.toLowerCase().includes(value) ||
-          item.orders.some(o => o.link.toLowerCase().includes(value))
+          item.bulk.name.toLowerCase().includes(value) ||
+          item.bulk.orders.some(o => o.link.toLowerCase().includes(value))
         );
       } else {
-        // Single order
         return (
-          (item.name || "").toLowerCase().includes(value) ||
-          (item.link || "").toLowerCase().includes(value) ||
-          item.id.toLowerCase().includes(value)
+          (item.order.name || "").toLowerCase().includes(value) ||
+          (item.order.link || "").toLowerCase().includes(value) ||
+          item.order.id.toLowerCase().includes(value)
         );
       }
     });
-  }, [categorizedOrders, activeTab, query]);
+  }, [categorizedItems, activeTab, query]);
 
   useEffect(() => {
     if (!openedOrderId) return;
@@ -356,10 +362,6 @@ export function OrdersPage({
   function toShortLink(link: string) {
     if (!link) return "-";
     return link.length > 48 ? `${link.slice(0, 30)}...${link.slice(-12)}` : link;
-  }
-
-  function isBulkGroup(item: CreatedOrder | BulkOrderGroup): item is BulkOrderGroup {
-    return 'orders' in item;
   }
 
   function StatusBadge({ status }: { status: string }) {
@@ -416,10 +418,10 @@ export function OrdersPage({
 
   function StatsSummary() {
     const stats = [
-      { label: "Active", count: categorizedOrders.running.length, color: "text-yellow-400" },
-      { label: "Completed", count: categorizedOrders.completed.length, color: "text-emerald-400" },
-      { label: "Scheduled", count: categorizedOrders.scheduled.length, color: "text-amber-400" },
-      { label: "Cancelled", count: categorizedOrders.cancelled.length, color: "text-red-400" },
+      { label: "Active", count: categorizedItems.running.length, color: "text-yellow-400" },
+      { label: "Completed", count: categorizedItems.completed.length, color: "text-emerald-400" },
+      { label: "Scheduled", count: categorizedItems.scheduled.length, color: "text-amber-400" },
+      { label: "Cancelled", count: categorizedItems.cancelled.length, color: "text-red-400" },
     ];
 
     return (
@@ -437,7 +439,7 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 Render single order row
+  // 🔥 Single Order Row
   function OrderTableRow({ order }: { order: CreatedOrder }) {
     const progress = getProgress(order);
     const status = getRealStatus(order);
@@ -489,48 +491,53 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 NEW: Render bulk order row
+  // 🔥 Bulk Order Row
   function BulkTableRow({ bulk }: { bulk: BulkOrderGroup }) {
+    const progress = getBulkProgress(bulk);
     const status = getBulkStatus(bulk);
-    const progressPercent = Math.round((bulk.completedLinks / bulk.totalLinks) * 100);
 
     return (
       <tr
-        onClick={() => setOpenedBulkId(bulk.id)}
+        onClick={() => setOpenedBulkId(bulk.bulkId)}
         className="cursor-pointer border-t border-gray-800 transition hover:bg-purple-500/5"
       >
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="text-purple-400">📦</span>
+            <span className="text-lg">📦</span>
             <div>
               <p className="font-medium text-purple-300">{bulk.name}</p>
-              <p className="mt-0.5 text-[11px] text-gray-600">{bulk.totalLinks} links</p>
+              <p className="mt-0.5 text-[11px] text-purple-500">{bulk.orders.length} links</p>
             </div>
           </div>
         </td>
         <td className="max-w-[220px] px-4 py-3">
           <p className="text-gray-500 text-xs">
-            {bulk.totalLinks} Instagram links
+            {bulk.orders.length} Instagram links
           </p>
         </td>
         <td className="px-4 py-3">
           <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium bg-purple-500/15 text-purple-300">
             <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />
-            Bulk Order
+            Bulk
           </span>
         </td>
         <td className="px-4 py-3">
           <div className="w-32">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[11px] text-gray-600">
-                {bulk.completedLinks}/{bulk.totalLinks} links
+                {progress.completedLinks}/{progress.totalLinks} links
               </span>
-              <span className="text-[11px] font-medium text-gray-500">{progressPercent}%</span>
+              <span className="text-[11px] font-medium text-gray-500">{progress.percent}%</span>
             </div>
-            <ProgressBar percent={progressPercent} />
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
+              <div
+                className="h-1.5 rounded-full bg-purple-500 transition-all duration-500"
+                style={{ width: `${progress.percent}%` }}
+              />
+            </div>
           </div>
         </td>
-        {activeTab === "scheduled" && <td className="px-4 py-3">-</td>}
+        {activeTab === "scheduled" && <td className="px-4 py-3 text-gray-600">-</td>}
         <td className="px-4 py-3 text-gray-600 text-xs">
           {new Date(bulk.createdAt).toLocaleDateString()}
           <span className="block text-gray-700">{new Date(bulk.createdAt).toLocaleTimeString()}</span>
@@ -539,7 +546,7 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 Single order card
+  // 🔥 Single Order Card
   function OrderCardItem({ order }: { order: CreatedOrder }) {
     const progress = getProgress(order);
     const status = getRealStatus(order);
@@ -590,14 +597,14 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 NEW: Bulk order card
+  // 🔥 Bulk Order Card
   function BulkCardItem({ bulk }: { bulk: BulkOrderGroup }) {
-    const progressPercent = Math.round((bulk.completedLinks / bulk.totalLinks) * 100);
+    const progress = getBulkProgress(bulk);
 
     return (
       <button
         type="button"
-        onClick={() => setOpenedBulkId(bulk.id)}
+        onClick={() => setOpenedBulkId(bulk.bulkId)}
         className="group rounded-xl border border-purple-500/30 bg-gradient-to-br from-purple-900/20 to-black p-4 text-left transition-all hover:border-purple-500/50 hover:shadow-lg hover:shadow-purple-500/10"
       >
         <div className="flex items-start justify-between gap-2">
@@ -608,7 +615,7 @@ export function OrdersPage({
                 {bulk.name}
               </p>
             </div>
-            <p className="mt-1 text-xs text-gray-600">{bulk.totalLinks} Instagram links</p>
+            <p className="mt-1 text-xs text-gray-600">{bulk.orders.length} Instagram links</p>
           </div>
           <span className="rounded-full bg-purple-500/20 px-2 py-1 text-[10px] font-medium text-purple-300">
             BULK
@@ -619,22 +626,16 @@ export function OrdersPage({
           <div className="flex items-center justify-between text-xs mb-1.5">
             <span className="text-gray-600">Links Completed</span>
             <span className="text-purple-400">
-              {bulk.completedLinks}/{bulk.totalLinks}
+              {progress.completedLinks}/{progress.totalLinks}
             </span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
             <div
               className="h-full rounded-full bg-purple-500 transition-all duration-500"
-              style={{ width: `${progressPercent}%` }}
+              style={{ width: `${progress.percent}%` }}
             />
           </div>
         </div>
-
-        {bulk.cancelledLinks > 0 && (
-          <p className="mt-2 text-[10px] text-red-400">
-            {bulk.cancelledLinks} cancelled
-          </p>
-        )}
 
         <div className="mt-3 flex items-center justify-between text-[11px] text-gray-600">
           <span>Deployed</span>
@@ -644,126 +645,138 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 NEW: Bulk Order Popup Component
+  // 🔥🔥🔥 BULK ORDER POPUP - Shows all links with individual cancel buttons
   function BulkOrderPopup({ bulk, onClose }: { bulk: BulkOrderGroup; onClose: () => void }) {
+    const progress = getBulkProgress(bulk);
+
     return (
       <div
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm px-4 py-6"
         onClick={onClose}
       >
         <div
-          className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-2xl border border-purple-500/30 bg-black p-5 shadow-2xl"
+          className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-2xl border border-purple-500/30 bg-gradient-to-br from-gray-900 to-black p-6 shadow-2xl"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="mb-4 flex items-center justify-between border-b border-gray-800 pb-4">
+          <div className="flex items-center justify-between border-b border-gray-800 pb-4 mb-4">
             <div className="flex items-center gap-3">
-              <span className="text-2xl">📦</span>
+              <span className="text-3xl">📦</span>
               <div>
-                <h3 className="text-lg font-semibold text-purple-400">{bulk.name}</h3>
-                <p className="text-xs text-gray-500">
-                  {bulk.totalLinks} links • {bulk.completedLinks} completed • {bulk.cancelledLinks} cancelled
+                <h3 className="text-xl font-bold text-purple-400">{bulk.name}</h3>
+                <p className="text-sm text-gray-500">
+                  {bulk.orders.length} links • {progress.completedLinks} completed
                 </p>
               </div>
             </div>
             <button
-              type="button"
               onClick={onClose}
-              className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-2 text-sm text-purple-300 transition hover:bg-purple-500/20"
+              className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 transition"
             >
               ✕ Close
             </button>
           </div>
 
-          {/* Progress Summary */}
-          <div className="mb-4 rounded-xl border border-purple-500/20 bg-purple-500/5 p-4">
+          {/* Overall Progress */}
+          <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-4 mb-6">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-gray-400">Overall Progress</span>
-              <span className="text-sm font-bold text-purple-400">
-                {Math.round((bulk.completedLinks / bulk.totalLinks) * 100)}%
-              </span>
+              <span className="text-lg font-bold text-purple-400">{progress.percent}%</span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-gray-800">
+            <div className="h-3 w-full overflow-hidden rounded-full bg-gray-800">
               <div
-                className="h-full rounded-full bg-purple-500 transition-all"
-                style={{ width: `${(bulk.completedLinks / bulk.totalLinks) * 100}%` }}
+                className="h-full rounded-full bg-gradient-to-r from-purple-600 to-purple-400 transition-all"
+                style={{ width: `${progress.percent}%` }}
               />
+            </div>
+            <div className="flex justify-between mt-2 text-xs text-gray-500">
+              <span>{progress.completed} / {progress.total} runs</span>
+              <span>{progress.completedLinks} / {progress.totalLinks} links done</span>
             </div>
           </div>
 
           {/* Individual Links */}
           <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-400">Individual Links</h4>
-            
+            <h4 className="text-sm font-semibold text-gray-400 flex items-center gap-2">
+              <span>🔗</span> Individual Links
+            </h4>
+
             {bulk.orders.map((order, index) => {
-              const progress = getProgress(order);
-              const status = getRealStatus(order);
-              const isCancelling = cancellingLink === order.link;
-              const isDisabled = status === "cancelled" || status === "completed" || isCancelling;
+              const orderProgress = getProgress(order);
+              const orderStatus = getRealStatus(order);
+              const isCancelling = cancellingOrderId === order.id;
+              const canCancel = orderStatus !== "cancelled" && orderStatus !== "completed";
 
               return (
                 <div
                   key={order.id}
-                  className="rounded-xl border border-gray-800 bg-gray-900/50 p-4 transition hover:border-gray-700"
+                  className="rounded-xl border border-gray-800 bg-black/50 p-4 hover:border-gray-700 transition"
                 >
                   <div className="flex items-start justify-between gap-4">
                     {/* Link Info */}
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-medium text-gray-500">#{index + 1}</span>
-                        <StatusBadge status={status} />
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-purple-500/20 text-purple-400 text-xs font-bold">
+                          {index + 1}
+                        </span>
+                        <StatusBadge status={orderStatus} />
+                        <span className="text-[10px] text-gray-600 font-mono">{order.id}</span>
                       </div>
-                      <p className="text-sm text-gray-300 truncate" title={order.link}>
+                      
+                      <p className="text-sm text-gray-300 break-all mb-3" title={order.link}>
                         {order.link}
                       </p>
-                      <p className="mt-1 text-[11px] text-gray-600 font-mono">{order.id}</p>
-                      
-                      {/* Progress Bar */}
-                      <div className="mt-3 max-w-xs">
-                        <div className="flex items-center justify-between text-[10px] text-gray-500 mb-1">
-                          <span>{progress.completed}/{progress.total} runs</span>
-                          <span>{progress.percent}%</span>
+
+                      {/* Progress */}
+                      <div className="max-w-md">
+                        <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1">
+                          <span>{orderProgress.completed}/{orderProgress.total} runs</span>
+                          <span>{orderProgress.percent}%</span>
                         </div>
-                        <ProgressBar percent={progress.percent} size="small" />
+                        <ProgressBar percent={orderProgress.percent} size="small" />
                       </div>
                     </div>
 
-                    {/* Actions */}
-                    <div className="flex flex-col gap-2">
+                    {/* Action Buttons */}
+                    <div className="flex flex-col gap-2 shrink-0">
                       {/* Cancel Button */}
                       <button
-                        type="button"
-                        onClick={() => handleCancelLink(order)}
-                        disabled={isDisabled}
-                        className={`rounded-lg px-3 py-2 text-xs font-medium transition ${
-                          isDisabled
-                            ? "border border-gray-700 bg-gray-800 text-gray-600 cursor-not-allowed"
-                            : "border border-red-500/50 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                        onClick={() => {
+                          if (window.confirm(`Cancel all runs for this link?\n\n${order.link}`)) {
+                            handleCancelLink(order);
+                          }
+                        }}
+                        disabled={!canCancel || isCancelling}
+                        className={`rounded-lg px-4 py-2 text-xs font-medium transition min-w-[100px] ${
+                          !canCancel
+                            ? "border border-gray-700 bg-gray-800/50 text-gray-600 cursor-not-allowed"
+                            : isCancelling
+                              ? "border border-yellow-500/50 bg-yellow-500/10 text-yellow-300"
+                              : "border border-red-500/50 bg-red-500/10 text-red-300 hover:bg-red-500/20"
                         }`}
                       >
                         {isCancelling ? (
-                          <span className="flex items-center gap-1">
-                            <span className="animate-spin">⏳</span> Cancelling...
+                          <span className="flex items-center justify-center gap-1">
+                            <span className="animate-spin">⏳</span>
                           </span>
-                        ) : status === "cancelled" ? (
+                        ) : orderStatus === "cancelled" ? (
                           "Cancelled"
-                        ) : status === "completed" ? (
+                        ) : orderStatus === "completed" ? (
                           "Completed"
                         ) : (
-                          "Cancel Link"
+                          "❌ Cancel"
                         )}
                       </button>
 
-                      {/* View Details Button */}
+                      {/* View Details */}
                       <button
-                        type="button"
                         onClick={() => {
                           onClose();
                           setOpenedOrderId(order.id);
                         }}
-                        className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300 hover:bg-yellow-500/20 transition"
+                        className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-2 text-xs text-yellow-300 hover:bg-yellow-500/20 transition"
                       >
-                        View Runs
+                        👁️ View Runs
                       </button>
                     </div>
                   </div>
@@ -775,18 +788,24 @@ export function OrdersPage({
           {/* Cancel All Button */}
           <div className="mt-6 pt-4 border-t border-gray-800">
             <button
-              type="button"
               onClick={() => {
-                if (!window.confirm(`Cancel ALL ${bulk.totalLinks} links in this bulk order?`)) return;
-                bulk.orders.forEach(order => {
-                  if (getRealStatus(order) !== "cancelled" && getRealStatus(order) !== "completed") {
-                    handleCancelLink(order);
-                  }
+                const activeOrders = bulk.orders.filter(o => {
+                  const status = getRealStatus(o);
+                  return status !== "cancelled" && status !== "completed";
                 });
+                
+                if (activeOrders.length === 0) {
+                  alert("No active links to cancel");
+                  return;
+                }
+
+                if (window.confirm(`Cancel ALL ${activeOrders.length} active links?`)) {
+                  activeOrders.forEach(order => handleCancelLink(order));
+                }
               }}
-              className="w-full rounded-lg border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm font-medium text-red-300 transition hover:bg-red-500/20"
+              className="w-full rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm font-semibold text-red-300 hover:bg-red-500/20 transition flex items-center justify-center gap-2"
             >
-              🚫 Cancel All Links
+              🚫 Cancel All Active Links
             </button>
           </div>
         </div>
@@ -796,6 +815,7 @@ export function OrdersPage({
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3">
@@ -814,6 +834,7 @@ export function OrdersPage({
 
       <StatsSummary />
 
+      {/* Notice */}
       {notice && (
         <div className="flex items-center justify-between rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
           <div className="flex items-center gap-2">
@@ -830,11 +851,12 @@ export function OrdersPage({
         </div>
       )}
 
+      {/* Tabs & Controls */}
       <div className="rounded-xl border border-yellow-500/20 bg-gradient-to-br from-gray-900 to-black p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-2">
             {TABS.map((tab) => {
-              const count = categorizedOrders[tab.key].length;
+              const count = categorizedItems[tab.key].length;
               const isActive = activeTab === tab.key;
               return (
                 <button
@@ -890,7 +912,6 @@ export function OrdersPage({
                     ? "bg-yellow-500/20 text-yellow-300"
                     : "text-gray-500 hover:text-yellow-400"
                 }`}
-                title="Table View"
               >
                 ☰ Rows
               </button>
@@ -902,7 +923,6 @@ export function OrdersPage({
                     ? "bg-yellow-500/20 text-yellow-300"
                     : "text-gray-500 hover:text-yellow-400"
                 }`}
-                title="Grid View"
               >
                 ⊞ Grid
               </button>
@@ -911,14 +931,16 @@ export function OrdersPage({
         </div>
       </div>
 
+      {/* Search Results */}
       {query && (
         <p className="text-sm text-gray-600">
-          Found <span className="text-gray-400 font-medium">{filteredOrders.length}</span> missions
+          Found <span className="text-gray-400 font-medium">{filteredItems.length}</span> missions
           matching "<span className="text-yellow-400">{query}</span>" in {activeTab}
         </p>
       )}
 
-      {filteredOrders.length === 0 ? (
+      {/* Content */}
+      {filteredItems.length === 0 ? (
         <EmptyState tab={activeTab} />
       ) : viewMode === "rows" ? (
         <div className="overflow-hidden rounded-xl border border-yellow-500/20 bg-black">
@@ -937,11 +959,11 @@ export function OrdersPage({
                 </tr>
               </thead>
               <tbody>
-                {filteredOrders.map((item) => 
-                  isBulkGroup(item) ? (
-                    <BulkTableRow key={item.id} bulk={item} />
+                {filteredItems.map((item) =>
+                  item.type === "bulk" ? (
+                    <BulkTableRow key={item.bulk.bulkId} bulk={item.bulk} />
                   ) : (
-                    <OrderTableRow key={item.id} order={item} />
+                    <OrderTableRow key={item.order.id} order={item.order} />
                   )
                 )}
               </tbody>
@@ -950,17 +972,17 @@ export function OrdersPage({
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {filteredOrders.map((item) =>
-            isBulkGroup(item) ? (
-              <BulkCardItem key={item.id} bulk={item} />
+          {filteredItems.map((item) =>
+            item.type === "bulk" ? (
+              <BulkCardItem key={item.bulk.bulkId} bulk={item.bulk} />
             ) : (
-              <OrderCardItem key={item.id} order={item} />
+              <OrderCardItem key={item.order.id} order={item.order} />
             )
           )}
         </div>
       )}
 
-      {/* Single Order Detail Modal */}
+      {/* Single Order Popup */}
       {openedOrder && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm px-4 py-6"
@@ -996,9 +1018,9 @@ export function OrdersPage({
 
       {/* 🔥 Bulk Order Popup */}
       {openedBulkGroup && (
-        <BulkOrderPopup 
-          bulk={openedBulkGroup} 
-          onClose={() => setOpenedBulkId(null)} 
+        <BulkOrderPopup
+          bulk={openedBulkGroup}
+          onClose={() => setOpenedBulkId(null)}
         />
       )}
     </div>
