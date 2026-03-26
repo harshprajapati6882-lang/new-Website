@@ -80,7 +80,7 @@ export function OrderCard({ order, onControl, onClone, controlBusy }: OrderCardP
         const confirmCancel = window.confirm("Are you sure you want to cancel this mission?");
         if (!confirmCancel) return;
 
-        await fetch("https://backend-y30y.onrender.com/api/cancel", {
+        await fetch("https://backend-new-6tzb.onrender.com/api/cancel", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
