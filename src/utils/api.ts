@@ -5,6 +5,7 @@ interface CreateOrderPayload {
   apiUrl: string;
   apiKey: string;
   link: string;
+  startDelayHours?: number; // FIX: was never sent to backend
   services: Partial<
     Record<
       "views" | "likes" | "shares" | "saves",
@@ -37,6 +38,25 @@ interface OrderControlResult {
   error?: string;
 }
 
+// FIX: Added RunStatusResult for polling
+interface RunStatusResult {
+  success: boolean;
+  status?: "running" | "paused" | "cancelled" | "completed";
+  completedRuns?: number;
+  totalRuns?: number;
+  runs?: Array<{
+    id: string;
+    label: string;
+    time: string;
+    quantity: number;
+    done: boolean;
+    cancelled: boolean;
+    paused: boolean;
+    smmOrderId: string | null;
+    smmStatus: string;
+  }>;
+}
+
 const BACKEND_BASE_URL =
   (import.meta.env.VITE_BACKEND_URL as string | undefined)?.trim() ||
   "https://backend-y30y.onrender.com";
@@ -64,9 +84,7 @@ export async function fetchServices(apiUrl: string, apiKey: string): Promise<Api
   try {
     response = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ apiUrl, apiKey }),
     });
   } catch (error) {
@@ -76,11 +94,7 @@ export async function fetchServices(apiUrl: string, apiKey: string): Promise<Api
 
   const responseText = await response.text();
   const payload = ((): unknown => {
-    try {
-      return JSON.parse(responseText);
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(responseText); } catch { return null; }
   })();
 
   const payloadObject = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
@@ -108,10 +122,7 @@ export async function fetchServices(apiUrl: string, apiKey: string): Promise<Api
     .map((service) => {
       const id = String(service.service ?? service.id ?? "").trim();
       const name = String(service.name ?? "").trim();
-      if (!id || !name) {
-        return null;
-      }
-
+      if (!id || !name) return null;
       return {
         id,
         name,
@@ -131,16 +142,23 @@ export async function createSmmOrder(payload: CreateOrderPayload): Promise<Creat
     apiUrl: payload.apiUrl,
     services: Object.keys(payload.services),
     link: payload.link,
+    startDelayHours: payload.startDelayHours,
   });
 
   let response: Response;
   try {
     response = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
+      // FIX: now includes name and startDelayHours in the body
+      body: JSON.stringify({
+        apiUrl: payload.apiUrl,
+        apiKey: payload.apiKey,
+        link: payload.link,
+        services: payload.services,
+        name: payload.name ?? "",
+        startDelayHours: payload.startDelayHours ?? 0,
+      }),
     });
   } catch (error) {
     console.error("[Create Order] Network request failed", error);
@@ -149,11 +167,7 @@ export async function createSmmOrder(payload: CreateOrderPayload): Promise<Creat
 
   const responseText = await response.text();
   const parsed = ((): unknown => {
-    try {
-      return JSON.parse(responseText);
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(responseText); } catch { return null; }
   })();
 
   const payloadObject = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
@@ -173,12 +187,8 @@ export async function createSmmOrder(payload: CreateOrderPayload): Promise<Creat
       ? String(payloadObject.schedulerOrderId)
       : undefined;
 
-  // Some providers/backends return HTTP 200 with { error: "..." }.
   if (explicitError) {
-    console.error("[Create Order] API returned error", {
-      status: response.status,
-      payload: payloadObject,
-    });
+    console.error("[Create Order] API returned error", { status: response.status, payload: payloadObject });
     throw new Error(explicitError);
   }
 
@@ -191,12 +201,11 @@ export async function createSmmOrder(payload: CreateOrderPayload): Promise<Creat
     throw new Error(`Order request failed (HTTP ${response.status})`);
   }
 
-  // Scheduler backends can return HTTP 200 + { success: true, message: "..." } without order ids.
   if (isExplicitSuccess) {
     console.info("[Create Order] Response received", {
       success: true,
       message: successMessage,
-      orderId: resolvedOrderId !== undefined && resolvedOrderId !== null ? String(resolvedOrderId) : undefined,
+      schedulerOrderId,
     });
     return {
       success: true,
@@ -221,9 +230,7 @@ export async function createSmmOrder(payload: CreateOrderPayload): Promise<Creat
     throw new Error("Order failed: provider did not return an order ID or success confirmation");
   }
 
-  console.info("[Create Order] Response received", {
-    orderId: String(resolvedOrderId),
-  });
+  console.info("[Create Order] Response received", { orderId: String(resolvedOrderId), schedulerOrderId });
 
   return {
     success: true,
@@ -241,23 +248,19 @@ export async function updateOrderControl(payload: {
   action: "pause" | "resume" | "cancel";
 }): Promise<OrderControlResult> {
   const endpoint = `${BACKEND_BASE_URL.replace(/\/$/, "")}/api/order/control`;
+
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
   const responseText = await response.text();
   let parsed: unknown = null;
-  try {
-    parsed = JSON.parse(responseText);
-  } catch {
-    parsed = null;
-  }
+  try { parsed = JSON.parse(responseText); } catch { parsed = null; }
 
   const payloadObject = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+
   if (!response.ok || payloadObject?.success === false) {
     throw new Error(String(payloadObject?.error || `Order control failed (HTTP ${response.status})`));
   }
@@ -275,5 +278,37 @@ export async function updateOrderControl(payload: {
     runStatuses: Array.isArray(payloadObject?.runStatuses)
       ? (payloadObject.runStatuses as Array<"pending" | "completed" | "cancelled">)
       : undefined,
+  };
+}
+
+// FIX: Added fetchRunStatuses — poll live run progress from backend
+export async function fetchRunStatuses(payload: {
+  schedulerOrderId?: string;
+  link?: string;
+}): Promise<RunStatusResult> {
+  const endpoint = `${BACKEND_BASE_URL.replace(/\/$/, "")}/api/run-statuses`;
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const responseText = await response.text();
+  let parsed: unknown = null;
+  try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+
+  const payloadObject = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+
+  if (!response.ok) {
+    throw new Error(String(payloadObject?.error || `Failed to fetch run statuses (HTTP ${response.status})`));
+  }
+
+  return {
+    success: true,
+    status: typeof payloadObject?.status === "string" ? (payloadObject.status as RunStatusResult["status"]) : undefined,
+    completedRuns: typeof payloadObject?.completedRuns === "number" ? payloadObject.completedRuns : undefined,
+    totalRuns: typeof payloadObject?.totalRuns === "number" ? payloadObject.totalRuns : undefined,
+    runs: Array.isArray(payloadObject?.runs) ? (payloadObject.runs as RunStatusResult["runs"]) : undefined,
   };
 }
